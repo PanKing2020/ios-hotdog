@@ -1,0 +1,13 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1115,8 +1115,10 @@
+ 		struct pseudo_init *pi;
+ 
+ 		for (pi = pseudo_inits; pi->ps_func; pi++) {
++			kprintf("sweet: pseudo_init %p\n", (void *)pi->ps_func);
+ 			(*pi->ps_func)(pi->ps_count);
+ 		}
++		kprintf("sweet: pseudo_init chain done\n");
+ 	}
+ 
+ 	return IOKitBSDInit();
