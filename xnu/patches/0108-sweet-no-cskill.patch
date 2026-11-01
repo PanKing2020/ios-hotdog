@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -272,7 +272,9 @@
+ 	}
+ 
+ 	/* CS_KILL triggers a kill signal, and no you can't have the page. Nothing else. */
+-	if (flags & CS_KILL) {
++	kprintf("sweet: cs_invalid_page pid %d [%s] flags 0x%llx - not killing\n",
++	    proc_getpid(p), p->p_comm, (unsigned long long)flags);
++	if (0 && (flags & CS_KILL)) {
+ 		flags |= CS_KILLED;
+ 		cs_procs_killed++;
+ 		send_kill = 1;
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7569,7 +7569,7 @@
+ 		}
+ 	} else {
+ 		if (!unexpected_failure) {
+-			proc_csflags_set(p, CS_KILLED);
++			kprintf("sweet: exec would set CS_KILLED - skipped\n");
+ 		}
+ 		/* make very sure execution fails */
+ 		if (vfexec || spawn) {
