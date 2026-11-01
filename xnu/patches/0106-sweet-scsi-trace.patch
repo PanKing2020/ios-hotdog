@@ -1,0 +1,36 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -153,6 +153,7 @@
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+ 	uint64_t ucd_pa = su.dma_pa + DMA_UCD, bounce_pa = su.dma_pa + DMA_BOUNCE;
+ 
++	kprintf("sweet: scsi enter cdb=0x%02x len=%u t=%llu\n", cdb[0], len, mach_absolute_time());
+ 	assert(len <= BOUNCE_SIZE);
+ 	bzero(utrd, sizeof(*utrd));
+ 	bzero(ucd, sizeof(*ucd));
+@@ -205,7 +206,10 @@
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 
++	kprintf("sweet: scsi doorbell (dbr before=%u)\n", ufs_rd(REG_UTRLDBR));
+ 	ufs_wr(REG_UTRLDBR, 1);
++	uint32_t dbr_after = ufs_rd(REG_UTRLDBR);
++	kprintf("sweet: scsi doorbell rung (dbr after=%u)\n", dbr_after);
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
+@@ -217,8 +221,14 @@
+ 		spin_until += mach_absolute_time();
+ 		nanoseconds_to_absolutetime(CMD_SLEEP_NS, &sleep_interval);
+ 	}
++	unsigned sweet_spins = 0;
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+ 		uint64_t now = mach_absolute_time();
++		if (sweet_spins < 3 || (sweet_spins % 500000) == 0) {
++			kprintf("sweet: scsi wait #%u dbr=%u now=%llu deadline=%llu\n",
++			    sweet_spins, ufs_rd(REG_UTRLDBR), now, deadline);
++		}
++		sweet_spins++;
+ 		if (now > deadline) {
+ 			ufs_wr(REG_UTRLCLR, ~1u);
+ 			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
