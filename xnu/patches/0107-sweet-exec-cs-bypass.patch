@@ -1,0 +1,14 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7532,6 +7532,11 @@
+ 		 */
+ 
+ 		error = proc_process_signature(p, &signature_failure_reason);
++		if (error) {
++			kprintf("sweet: exec signature check failed (%d) - ignored\n", error);
++			error = 0;
++			signature_failure_reason = OS_REASON_NULL;
++		}
+ 	}
+ 
+ 	if (0 == error) {
