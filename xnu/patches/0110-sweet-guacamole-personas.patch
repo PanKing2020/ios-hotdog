@@ -1,0 +1,13 @@
+--- a/config/MASTER.arm64.guacamole
++++ b/config/MASTER.arm64.guacamole
+@@ -97,6 +97,10 @@
+ 
+ options		COUNT_SYSCALLS		# count bsd system calls 	# <countcalls>
+ options     TRASH_VFP_ON_SAVE   # <debug,trash_vfp>
++# SWEET: the iOS userland (usermanagerd, launchd, XPC services) calls the
++# persona() syscall (494) to create the kernel personas 99/199; sys_persona.c
++# is "optional config_personas" in bsd/conf/files.
++options     config_personas
+ options		ALTERNATE_DEBUGGER	# <alternate_debugger>
+ 
+ options   CONFIG_VNODES=1024		# <xsmall>
