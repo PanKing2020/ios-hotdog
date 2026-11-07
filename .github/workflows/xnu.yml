@@ -74,7 +74,26 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee build.log
+
+      - name: Collect build errors
+        if: failure()
+        run: |
+          # the full log is ~130 MB: keep the errors and the tail, that is what matters
+          grep -aE "error:|fatal error|Error [0-9]+|FAILED|undefined reference|No such file" dxb/build.log > build-errors.txt 2>/dev/null || true
+          tail -c 300000 dxb/build.log > build-tail.txt 2>/dev/null || true
+          wc -l build-errors.txt build-tail.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-errors
+          path: |
+            build-errors.txt
+            build-tail.txt
+          retention-days: 3
 
       - name: Package build tree for local compiles
         if: always()
