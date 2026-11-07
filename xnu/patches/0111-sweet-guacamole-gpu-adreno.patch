@@ -12,10 +12,10 @@ index da3bc2e..dce3f71 100644
  bsd/dev/sweet_rpmh.c			standard
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 new file mode 100644
-index 0000000..a16300b
+index 0000000..98575b1
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_adreno.c
-@@ -0,0 +1,3371 @@
+@@ -0,0 +1,3378 @@
 +/*
 + * Adreno 640 (SM8150, OnePlus 7 Pro "guacamole") bring-up for the sweet XNU
 + * tree: the HakiOS driver drivers/gpu/hakios.adreno.c (4198 lines) with the
@@ -289,14 +289,21 @@ index 0000000..a16300b
 +	}
 +	phys = *(const volatile uint32_t *)locator;
 +	size = *(const volatile uint32_t *)(locator + 4);
-+	if (phys < 0x80000000u || (phys & 3u) || (size & 3u) || size < 0x2000u || size > 0x100000u ||
-+	    (uint64_t)phys + size > 0x100000000ull) {
++	/*
++	 * The locator's size is the database itself (on this board 0x1228), not the size of
++	 * the reserved window around it: the vendor's driver reads a 0x20000 window at this
++	 * address, so map at least that (bounds checks below still use the mapped size).
++	 */
++	uint32_t window = size < 0x20000u ? 0x20000u : size;
++
++	if (phys < 0x80000000u || (phys & 3u) || size < 0x100u || size > 0x80000u ||
++	    (uint64_t)phys + window > 0x100000000ull) {
 +		printf("SWEETADRENO: the RPMh locator points nowhere sane: %#x/%#x\n", phys, size);
 +		return NULL;
 +	}
-+	cmd_db_size = size;
-+	printf("SWEETADRENO: cmd-db locator %#x: %#x/%#x\n", SWEET_DEV_RPMH_DICT_PA, phys, size);
-+	return (const struct cmd_db_header *)ml_io_map(phys, size);
++	cmd_db_size = window;
++	printf("SWEETADRENO: cmd-db locator %#x: %#x/%#x (window %#x)\n", SWEET_DEV_RPMH_DICT_PA, phys, size, window);
++	return (const struct cmd_db_header *)ml_io_map(phys, window);
 +}
 +
 +/*
