@@ -12,10 +12,10 @@ index da3bc2e..dce3f71 100644
  bsd/dev/sweet_rpmh.c			standard
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 new file mode 100644
-index 0000000..98575b1
+index 0000000..d1db537
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_adreno.c
-@@ -0,0 +1,3378 @@
+@@ -0,0 +1,3399 @@
 +/*
 + * Adreno 640 (SM8150, OnePlus 7 Pro "guacamole") bring-up for the sweet XNU
 + * tree: the HakiOS driver drivers/gpu/hakios.adreno.c (4198 lines) with the
@@ -298,12 +298,33 @@ index 0000000..98575b1
 +
 +	if (phys < 0x80000000u || (phys & 3u) || size < 0x100u || size > 0x80000u ||
 +	    (uint64_t)phys + window > 0x100000000ull) {
-+		printf("SWEETADRENO: the RPMh locator points nowhere sane: %#x/%#x\n", phys, size);
++		printf("SWEETADRENO: the RPMh locator points nowhere near the database: %#x/%#x\n", phys, size);
 +		return NULL;
 +	}
-+	cmd_db_size = window;
-+	printf("SWEETADRENO: cmd-db locator %#x: %#x/%#x (window %#x)\n", SWEET_DEV_RPMH_DICT_PA, phys, size, window);
-+	return (const struct cmd_db_header *)ml_io_map(phys, window);
++	/*
++	 * Parse a normal-memory copy: the database is mapped as Device memory and the compiler
++	 * turns the 8-byte ID compares into aligned loads, which fault on Device memory.
++	 */
++	vm_offset_t mapped = ml_io_map(phys, window);
++	uint8_t *copy;
++	uint32_t copy_size = (size + 0xfffu) & ~0xfffu;
++
++	if (mapped == 0 || copy_size > window) {
++		return NULL;
++	}
++	if (kmem_alloc(kernel_map, (vm_offset_t *)&copy, copy_size, KMA_KOBJECT | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
++	    KERN_SUCCESS) {
++		return NULL;
++	}
++	for (uint32_t at = 0; at < copy_size; at += 4) {
++		uint32_t word = *(const volatile uint32_t *)(mapped + at);
++		uint32_t n = MIN((uint64_t)4, (uint64_t)(copy_size - at));
++
++		memcpy(copy + at, &word, n);
++	}
++	cmd_db_size = copy_size;
++	printf("SWEETADRENO: cmd-db locator %#x: %#x/%#x (copied %#x)\n", SWEET_DEV_RPMH_DICT_PA, phys, size, copy_size);
++	return (const struct cmd_db_header *)copy;
 +}
 +
 +/*
