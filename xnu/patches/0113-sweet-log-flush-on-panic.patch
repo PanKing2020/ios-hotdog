@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
-index a16300b..8e2d881 100644
+index 98575b1..e405ee4 100644
 --- a/bsd/dev/sweet_gpu_adreno.c
 +++ b/bsd/dev/sweet_gpu_adreno.c
 @@ -44,6 +44,7 @@
@@ -21,7 +21,7 @@ index a16300b..8e2d881 100644
  /*
   * guacamole is an SM8150: the driver's a640 branches are the ones taken (its
   * boot-arg gpu_sm8150 becomes compile time here).
-@@ -1428,6 +1433,8 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+@@ -1435,6 +1440,8 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
  	}
  	put(&smmu, "cba2r", smmu_page + SMMU_CBA2R(space->context), SMMU_CBA2R_64_BIT);
  	put(&smmu, "cbar", smmu_page + SMMU_CBAR(space->context), SMMU_CBAR_STAGE_1);
@@ -30,7 +30,7 @@ index a16300b..8e2d881 100644
  	put(&smmu, "cb tcr2", context + SMMU_CB_TCR2, SMMU_TCR2);
  	put(&smmu, "cb tcr", context + SMMU_CB_TCR, SMMU_TCR_39_BITS);
  	put(&smmu, "cb ttbr0, low", context + SMMU_CB_TTBR0, (uint32_t)root);
-@@ -1444,6 +1451,7 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+@@ -1451,6 +1458,7 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
  		    rd(smmu.base + context + SMMU_CB_TLBSTATUS));
  		return false;
  	}
@@ -38,7 +38,7 @@ index a16300b..8e2d881 100644
  	put(&smmu, "cb sctlr", context + SMMU_CB_SCTLR, SMMU_SCTLR_ON | space->control);
  	put(&smmu, "s2cr", SMMU_S2CR(match), space->context);
  	put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | mask << 16 | stream);
-@@ -1874,10 +1882,12 @@ step_gmu_space(void)
+@@ -1881,10 +1889,12 @@ step_gmu_space(void)
  		return false;
  	}
  	announce("find the GMU's firmware, fw/a660_gmu.bin, in the small image, and make the memory it asks for");
@@ -51,7 +51,7 @@ index a16300b..8e2d881 100644
  	/* A640 predates allocation metadata: the two cache VMAs are fixed by its firmware ABI. */
  	if (a640) {
  		if (!block_new(&gmu_space, &gmu_blocks[gmu_block_count++], 0x4000, 0x3c000, PTE_GMU) ||
-@@ -1897,6 +1907,7 @@ step_gmu_space(void)
+@@ -1904,6 +1914,7 @@ step_gmu_space(void)
  		    in_tcm(block.address)) {
  			continue;
  		}
@@ -59,7 +59,7 @@ index a16300b..8e2d881 100644
  		if (gmu_block_count == sizeof(gmu_blocks) / sizeof(gmu_blocks[0]) || (block.address & 4095) ||
  		    block.value > 0x100000 || !block_new(&gmu_space, &gmu_blocks[gmu_block_count++], block.address, block.value,
  		    PTE_GMU)) {
-@@ -1904,6 +1915,7 @@ step_gmu_space(void)
+@@ -1911,6 +1922,7 @@ step_gmu_space(void)
  			return false;
  		}
  	}
@@ -67,7 +67,7 @@ index a16300b..8e2d881 100644
  	if (!block_new(&gmu_space, &gmu_log, GMU_LOG_ADDRESS, GMU_LOG_SIZE, PTE_GMU) ||
  	    !block_new(&gmu_space, &gmu_hfi, GMU_HFI_ADDRESS, PAGE_SIZE, PTE_GMU)) {
  		return false;
-@@ -1911,9 +1923,11 @@ step_gmu_space(void)
+@@ -1918,9 +1930,11 @@ step_gmu_space(void)
  
  	announce("give the SMMU's context 1 these tables and send the GMU's requests (stream 5) through it: the first "
  	    "writes to the SMMU, the global ones (cbar, cba2r, s2cr, smr) through the hypervisor");
@@ -79,7 +79,7 @@ index a16300b..8e2d881 100644
  	gmu_space_is_on = true;         /* whatever of it has been written by the time something fails is taken back */
  	return space_on(&gmu_space, GMU_MATCH, GMU_STREAM);
  }
-@@ -3280,6 +3294,27 @@ static bool (*const step_at[])(void) = {
+@@ -3287,6 +3301,27 @@ static bool (*const step_at[])(void) = {
  	step_gmu_space, step_gmu_firmware, step_gmu_start, step_gmu_queues,
  	step_core_power, step_core_space, step_zap_load, step_core_start, step_core_commands,
  };
