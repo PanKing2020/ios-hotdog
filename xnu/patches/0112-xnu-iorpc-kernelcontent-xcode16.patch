@@ -1,0 +1,14 @@
+--- a/iokit/IOKit/IORPC.h
++++ b/iokit/IOKit/IORPC.h
+@@ -224,6 +224,11 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	/* Xcode 16's iig emits ".kernelContent" for the kernel side of an RPC;
++	 * backported from a newer xnu so the generated DriverKit/*.iig.cpp build. */
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
