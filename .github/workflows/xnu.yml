@@ -133,7 +133,9 @@ jobs:
         if: always()
         run: |
           mkdir -p out
-          cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
+          # only the stripped kernels: the unstripped ones + dSYMs made this artifact
+          # 65 MB, which is painful to fetch over a slow link (16 MB is enough)
+          find dxb/fakeroot/System/Library/Kernels -maxdepth 1 -type f -name 'kernel.*' ! -name '*.unstripped' -exec cp {} out/ \; 2>/dev/null || true
           ls -la out
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
 
