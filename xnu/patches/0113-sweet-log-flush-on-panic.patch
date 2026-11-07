@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
-index d1db537..aa10bf3 100644
+index 4f2f7d6..0d1e897 100644
 --- a/bsd/dev/sweet_gpu_adreno.c
 +++ b/bsd/dev/sweet_gpu_adreno.c
 @@ -44,6 +44,7 @@
@@ -79,7 +79,7 @@ index d1db537..aa10bf3 100644
  	gmu_space_is_on = true;         /* whatever of it has been written by the time something fails is taken back */
  	return space_on(&gmu_space, GMU_MATCH, GMU_STREAM);
  }
-@@ -3308,6 +3322,27 @@ static bool (*const step_at[])(void) = {
+@@ -3309,6 +3323,27 @@ static bool (*const step_at[])(void) = {
  	step_gmu_space, step_gmu_firmware, step_gmu_start, step_gmu_queues,
  	step_core_power, step_core_space, step_zap_load, step_core_start, step_core_commands,
  };
