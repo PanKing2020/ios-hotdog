@@ -1,0 +1,235 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+index 015a32c..5bb8771 100644
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -44,6 +44,7 @@
+  */
+ #if defined(ARM64_BOARD_CONFIG_GUACAMOLE)
+ 
++#include <stdarg.h>
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <kern/clock.h>
+@@ -62,6 +63,10 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern uint64_t kvtophys(vm_offset_t va);		/* pmap_paddr_t (the driver had it at drv:108) */
+ extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ 
++/* debug aid for the staged bring-up (defined further down, next to the step table) */
++static void sweet_gpu_trace(const char *fmt, ...) __printflike(1, 2);
++extern void sweet_log_flush_now(void);
++
+ /*
+  * guacamole is an SM8150: the driver's a640 branches are the ones taken (its
+  * boot-arg gpu_sm8150 becomes compile time here).
+@@ -1428,6 +1433,8 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+ 	}
+ 	put(&smmu, "cba2r", smmu_page + SMMU_CBA2R(space->context), SMMU_CBA2R_64_BIT);
+ 	put(&smmu, "cbar", smmu_page + SMMU_CBAR(space->context), SMMU_CBAR_STAGE_1);
++	sweet_gpu_trace("SWEETADRENO: %u: trace: space_on context %u root %#llx, writing tables\n", step, space->context,
++	    (unsigned long long)root);
+ 	put(&smmu, "cb tcr2", context + SMMU_CB_TCR2, SMMU_TCR2);
+ 	put(&smmu, "cb tcr", context + SMMU_CB_TCR, SMMU_TCR_39_BITS);
+ 	put(&smmu, "cb ttbr0, low", context + SMMU_CB_TTBR0, (uint32_t)root);
+@@ -1444,6 +1451,7 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+ 		    rd(smmu.base + context + SMMU_CB_TLBSTATUS));
+ 		return false;
+ 	}
++	sweet_gpu_trace("SWEETADRENO: %u: trace: space_on about to switch the context on\n", step);
+ 	put(&smmu, "cb sctlr", context + SMMU_CB_SCTLR, SMMU_SCTLR_ON | space->control);
+ 	put(&smmu, "s2cr", SMMU_S2CR(match), space->context);
+ 	put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | mask << 16 | stream);
+@@ -1847,10 +1855,12 @@ step_gmu_space(void)
+ 		return false;
+ 	}
+ 	announce("find the GMU's firmware, fw/a660_gmu.bin, in the small image, and make the memory it asks for");
++	sweet_gpu_trace("SWEETADRENO: %u: trace: step 13 enters with %u blocking tables\n", step, gmu_block_count);
+ 	gmu_firmware = image_file("fw", a640 ? "a640_gmu.bin" : "a660_gmu.bin", &gmu_firmware_size);
+ 	if (gmu_firmware == NULL) {
+ 		return false;
+ 	}
++	sweet_gpu_trace("SWEETADRENO: %u: trace: firmware is %llu bytes\n", step, (unsigned long long)gmu_firmware_size);
+ 	/* A640 predates allocation metadata: the two cache VMAs are fixed by its firmware ABI. */
+ 	if (a640) {
+ 		if (!block_new(&gmu_space, &gmu_blocks[gmu_block_count++], 0x4000, 0x3c000, PTE_GMU) ||
+@@ -1870,6 +1880,7 @@ step_gmu_space(void)
+ 		    in_tcm(block.address)) {
+ 			continue;
+ 		}
++		sweet_gpu_trace("SWEETADRENO: %u: trace: firmware wants %#x bytes at %#x\n", step, block.value, block.address);
+ 		if (gmu_block_count == sizeof(gmu_blocks) / sizeof(gmu_blocks[0]) || (block.address & 4095) ||
+ 		    block.value > 0x100000 || !block_new(&gmu_space, &gmu_blocks[gmu_block_count++], block.address, block.value,
+ 		    PTE_GMU)) {
+@@ -1877,6 +1888,7 @@ step_gmu_space(void)
+ 			return false;
+ 		}
+ 	}
++	sweet_gpu_trace("SWEETADRENO: %u: trace: firmware blocks done, making log and HFI blocks\n", step);
+ 	if (!block_new(&gmu_space, &gmu_log, GMU_LOG_ADDRESS, GMU_LOG_SIZE, PTE_GMU) ||
+ 	    !block_new(&gmu_space, &gmu_hfi, GMU_HFI_ADDRESS, PAGE_SIZE, PTE_GMU)) {
+ 		return false;
+@@ -1884,9 +1896,11 @@ step_gmu_space(void)
+ 
+ 	announce("give the SMMU's context 1 these tables and send the GMU's requests (stream 5) through it: the first "
+ 	    "writes to the SMMU, the global ones (cbar, cba2r, s2cr, smr) through the hypervisor");
++	sweet_gpu_trace("SWEETADRENO: %u: trace: about to run smmu_layout\n", step);
+ 	if (!smmu_layout()) {
+ 		return false;
+ 	}
++	sweet_gpu_trace("SWEETADRENO: %u: trace: smmu_layout done, calling space_on\n", step);
+ 	gmu_space_is_on = true;         /* whatever of it has been written by the time something fails is taken back */
+ 	return space_on(&gmu_space, GMU_MATCH, GMU_STREAM);
+ }
+@@ -3253,6 +3267,27 @@ static bool (*const step_at[])(void) = {
+ 	step_gmu_space, step_gmu_firmware, step_gmu_start, step_gmu_queues,
+ 	step_core_power, step_core_space, step_zap_load, step_core_start, step_core_commands,
+ };
++/*
++ * Debug aid for the staged bring-up: write the line and push the persistent log ring
++ * out at once (the panic path does the same), so the last thing that ran is readable
++ * from a recovery even when the kernel dies before the 10 s flush tick.
++ */
++static void
++sweet_gpu_trace(const char *fmt, ...)
++{
++	char line[192];
++	va_list ap;
++	int n;
++
++	va_start(ap, fmt);
++	n = vsnprintf(line, sizeof(line), fmt, ap);
++	va_end(ap);
++	if (n > 0) {
++		printf("%s", line);
++	}
++	sweet_log_flush_now();
++}
++
+ #define STEPS ((uint32_t)(sizeof(step_at) / sizeof(step_at[0])))
+ 
+ /*
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 1da5cc6..05711c4 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -358,9 +358,7 @@ ufs_find_partition(const char *want)
+ static int
+ ufs_take_over_host(void)
+ {
+-	kprintf("sweet: ufs_take_over_host enter (first read next)\n");
+ 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
+-	kprintf("sweet: ufs hce=0x%x hcs=0x%x\n", hce, hcs);
+ 	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
+ 		printf("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
+ 		return ENXIO;
+@@ -611,9 +609,7 @@ sweet_ufs_init(void)
+ 	su.cache = (cache == 1);
+ 	su.wait = (wait == 1);
+ 
+-	kprintf("sweet: ufs init reg=0x%llx size=0x%x\n", (uint64_t)reg[0], size);
+ 	su.regs = ml_io_map(reg[0], reg[1]);
+-	kprintf("sweet: ufs regs mapped at %p\n", su.regs);
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+@@ -695,6 +691,7 @@ static char sweet_log_ring[SWEET_LOG_SIZE];
+ static uint64_t _Atomic sweet_log_total;
+ static int sweet_log_chan;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
++static bool sweet_log_on;               /* the flush thread runs: the ring may be written now */
+ 
+ /* Called for all console output, any context: never blocks. */
+ void sweet_log_append(const char *c, int size);
+@@ -797,6 +794,61 @@ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ 	}
+ }
+ 
++
++/*
++ * Write the ring out now. The panic path calls this so that a panic that kills the
++ * machine before the next 10 s tick is still readable from a recovery (the panic text
++ * is in the ring; without this it stays in RAM and dies with it). Never blocks: if the
++ * flush thread holds the lock, the ring stays as it is.
++ */
++void sweet_log_flush_now(void);
++
++void
++sweet_log_flush_now(void)
++{
++	uint64_t base, total, pos;
++	void *bounce;
++	int error = 0;
++
++	if (!sweet_log_on || !su.ready || !su.writable) {
++		return;
++	}
++	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++		return;
++	}
++	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	bounce = (void *)(su.dma + DMA_BOUNCE);
++	total = os_atomic_load(&sweet_log_total, relaxed);
++	/* Only the newest window: one or two UFS writes from the panic path, not the whole 4 MiB. */
++	pos = total > 48u << 10 ? total - (48u << 10) : 0;
++	pos -= pos % UFS_BLOCK;
++	while (pos < total && !error) {
++		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++		uint32_t blk = off / UFS_BLOCK;
++		uint64_t need = ((uint64_t)off % UFS_BLOCK + (total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
++		uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
++		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++
++		memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
++		error = ufs_write_blocks(base + 1 + blk, n);
++		pos = (uint64_t)(blk + n) * UFS_BLOCK;
++	}
++	if (!error) {
++		struct sweet_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = SWEET_LOG_SIZE, .total = total, .seq = 0,
++		};
++
++		bzero(bounce, UFS_BLOCK);
++		memcpy(bounce, &h, sizeof(h));
++		error = ufs_write_blocks(base, 1);
++	}
++	if (!error) {
++		(void)ufs_sync_cache();
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++}
++
+ /*
+  * Boot-arg sweetlogdump=1: read the persistent ring left by the previous
+  * boot and print the lines worth photographing (crashes, exit reasons,
+@@ -893,6 +945,7 @@ sweet_log_start(void)
+ 	}
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
++		sweet_log_on = true;
+ 	}
+ }
+ 
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 437adb1..e07a15b 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1074,6 +1074,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 
+ #if defined(SWEET)
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
++#if defined(__arm64__)
++extern void sweet_log_flush_now(void);       /* bsd/dev/sweet_ufs.c: panic text into the persistent ring */
++#endif
+ 	sweet_early_panic(panic_format_str, panic_args);
+ #endif
+ 
+@@ -1086,6 +1089,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 
+ 	/* call machine-layer panic handler */
+ 	ml_panic_trap_to_debugger(panic_format_str, panic_args, reason, ctx, panic_options_mask, panic_caller);
++#if defined(__arm64__)
++	sweet_log_flush_now();
++#endif
+ 
+ 	/* track depth of debugger/panic entry */
+ 	CPUDEBUGGERCOUNT++;
