@@ -12,10 +12,10 @@ index da3bc2e..dce3f71 100644
  bsd/dev/sweet_rpmh.c			standard
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 new file mode 100644
-index 0000000..7f12026
+index 0000000..015a32c
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_adreno.c
-@@ -0,0 +1,3343 @@
+@@ -0,0 +1,3344 @@
 +/*
 + * Adreno 640 (SM8150, OnePlus 7 Pro "guacamole") bring-up for the sweet XNU
 + * tree: the HakiOS driver drivers/gpu/hakios.adreno.c (4198 lines) with the
@@ -77,6 +77,7 @@ index 0000000..7f12026
 +#include <vm/memory_types.h>
 +
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern uint64_t kvtophys(vm_offset_t va);		/* pmap_paddr_t (the driver had it at drv:108) */
 +extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
 +
 +/*
