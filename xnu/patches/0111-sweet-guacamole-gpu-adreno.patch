@@ -12,10 +12,10 @@ index da3bc2e..dce3f71 100644
  bsd/dev/sweet_rpmh.c			standard
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 new file mode 100644
-index 0000000..d1db537
+index 0000000..4f2f7d6
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_adreno.c
-@@ -0,0 +1,3399 @@
+@@ -0,0 +1,3400 @@
 +/*
 + * Adreno 640 (SM8150, OnePlus 7 Pro "guacamole") bring-up for the sweet XNU
 + * tree: the HakiOS driver drivers/gpu/hakios.adreno.c (4198 lines) with the
@@ -2879,7 +2879,8 @@ index 0000000..d1db537
 + * (Step 21 is what tells whether the 3D core gets out of secure mode with it.) There was a
 + * boot-arg adreno_zap=0 for the second and later runs of a started phone; nothing reads it now.
 + */
-+#define ZAP_MEMORY              (a640 ? 0x98f15000ull : 0x8b71a000ull)
++/* the phone's own reserved-memory: pil_gpu_region@98b15000 (8 KiB, live DTB, SM8150/hotdog) */
++#define ZAP_MEMORY              (a640 ? 0x98b15000ull : 0x8b71a000ull)
 +#define ZAP_MEMORY_SIZE         0x2000u
 +#define SCM_PAS_MEM_SETUP       SCM_CALL(2, 2)
 +#define SCM_THREE_VALUES        3
