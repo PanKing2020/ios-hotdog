@@ -1,0 +1,43 @@
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 19f27cd..f0be548 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -717,6 +717,7 @@ extern unsigned char iso_font[256 * 16];
+ #define FBCON_FG        0xffffffffu
+ #define FBCON_BG        0xff000000u
+ 
++static int fbcon_draw = 1;          /* sweetfb=0: never draw on the panel (the iOS display keeps it) */
+ static volatile uint32_t *fbcon_base;
+ static uint32_t fbcon_width, fbcon_height, fbcon_stride;
+ static uint32_t fbcon_cols, fbcon_rows, fbcon_col, fbcon_row;
+@@ -744,6 +745,9 @@ fbcon_newline(void)
+ static void
+ fbcon_init(void)
+ {
++	if (!fbcon_draw) {
++		return;
++	}
+ 	fbcon_cols = fbcon_width / (8 * FBCON_SCALE);
+ 	fbcon_rows = fbcon_height / (16 * FBCON_SCALE);
+ 	fbcon_col = fbcon_row = 0;
+@@ -761,6 +765,9 @@ fbcon_transmit_ready(void)
+ static void
+ fbcon_transmit_data(uint8_t c)
+ {
++	if (!fbcon_draw) {
++		return;
++	}
+ 	if (c == '\r') {
+ 		fbcon_col = 0;
+ 		return;
+@@ -840,6 +847,10 @@ fbcon_probe(void)
+ 	if (fbcon_base != NULL) {
+ 		register_serial_functions(&sweet_fbcon_serial_functions);
+ 	}
++	/* sweetfb=0: draw nothing -- the panel is left to the iOS display driver */
++	if (!PE_parse_boot_argn("sweetfb", &fbcon_draw, sizeof(fbcon_draw))) {
++		fbcon_draw = 1;
++	}
+ }
+ 
+ #if HIBERNATION
