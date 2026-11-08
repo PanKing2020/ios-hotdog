@@ -5,7 +5,7 @@ diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 
 +++ b/bsd/dev/sweet_gpu_adreno.c
 
-@@ -3294,6 +3294,42 @@
+@@ -3308,6 +3308,42 @@
 
  		second_space_is_on = false;
 
@@ -91,7 +91,7 @@ diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 
  /*
 
-@@ -3391,11 +3427,19 @@
+@@ -3426,11 +3462,19 @@
 
  		gpu_block_stop();
 
