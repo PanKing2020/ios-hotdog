@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
-index 4f2f7d6..0d1e897 100644
+index c3b7212..b784972 100644
 --- a/bsd/dev/sweet_gpu_adreno.c
 +++ b/bsd/dev/sweet_gpu_adreno.c
 @@ -44,6 +44,7 @@
@@ -10,7 +10,7 @@ index 4f2f7d6..0d1e897 100644
  #include <sys/param.h>
  #include <sys/systm.h>
  #include <kern/clock.h>
-@@ -62,6 +63,10 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+@@ -63,6 +64,10 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
  extern uint64_t kvtophys(vm_offset_t va);		/* pmap_paddr_t (the driver had it at drv:108) */
  extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
  
@@ -21,7 +21,7 @@ index 4f2f7d6..0d1e897 100644
  /*
   * guacamole is an SM8150: the driver's a640 branches are the ones taken (its
   * boot-arg gpu_sm8150 becomes compile time here).
-@@ -1456,6 +1461,8 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+@@ -1457,6 +1462,8 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
  	}
  	put(&smmu, "cba2r", smmu_page + SMMU_CBA2R(space->context), SMMU_CBA2R_64_BIT);
  	put(&smmu, "cbar", smmu_page + SMMU_CBAR(space->context), SMMU_CBAR_STAGE_1);
@@ -30,7 +30,7 @@ index 4f2f7d6..0d1e897 100644
  	put(&smmu, "cb tcr2", context + SMMU_CB_TCR2, SMMU_TCR2);
  	put(&smmu, "cb tcr", context + SMMU_CB_TCR, SMMU_TCR_39_BITS);
  	put(&smmu, "cb ttbr0, low", context + SMMU_CB_TTBR0, (uint32_t)root);
-@@ -1472,6 +1479,7 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
+@@ -1473,6 +1480,7 @@ space_on(struct gpu_space *space, uint32_t match, uint32_t stream)
  		    rd(smmu.base + context + SMMU_CB_TLBSTATUS));
  		return false;
  	}
@@ -38,7 +38,7 @@ index 4f2f7d6..0d1e897 100644
  	put(&smmu, "cb sctlr", context + SMMU_CB_SCTLR, SMMU_SCTLR_ON | space->control);
  	put(&smmu, "s2cr", SMMU_S2CR(match), space->context);
  	put(&smmu, "smr", SMMU_SMR(match), SMMU_SMR_VALID | mask << 16 | stream);
-@@ -1902,10 +1910,12 @@ step_gmu_space(void)
+@@ -1903,10 +1911,12 @@ step_gmu_space(void)
  		return false;
  	}
  	announce("find the GMU's firmware, fw/a660_gmu.bin, in the small image, and make the memory it asks for");
@@ -51,7 +51,7 @@ index 4f2f7d6..0d1e897 100644
  	/* A640 predates allocation metadata: the two cache VMAs are fixed by its firmware ABI. */
  	if (a640) {
  		if (!block_new(&gmu_space, &gmu_blocks[gmu_block_count++], 0x4000, 0x3c000, PTE_GMU) ||
-@@ -1925,6 +1935,7 @@ step_gmu_space(void)
+@@ -1926,6 +1936,7 @@ step_gmu_space(void)
  		    in_tcm(block.address)) {
  			continue;
  		}
@@ -59,7 +59,7 @@ index 4f2f7d6..0d1e897 100644
  		if (gmu_block_count == sizeof(gmu_blocks) / sizeof(gmu_blocks[0]) || (block.address & 4095) ||
  		    block.value > 0x100000 || !block_new(&gmu_space, &gmu_blocks[gmu_block_count++], block.address, block.value,
  		    PTE_GMU)) {
-@@ -1932,6 +1943,7 @@ step_gmu_space(void)
+@@ -1933,6 +1944,7 @@ step_gmu_space(void)
  			return false;
  		}
  	}
@@ -67,7 +67,7 @@ index 4f2f7d6..0d1e897 100644
  	if (!block_new(&gmu_space, &gmu_log, GMU_LOG_ADDRESS, GMU_LOG_SIZE, PTE_GMU) ||
  	    !block_new(&gmu_space, &gmu_hfi, GMU_HFI_ADDRESS, PAGE_SIZE, PTE_GMU)) {
  		return false;
-@@ -1939,9 +1951,11 @@ step_gmu_space(void)
+@@ -1940,9 +1952,11 @@ step_gmu_space(void)
  
  	announce("give the SMMU's context 1 these tables and send the GMU's requests (stream 5) through it: the first "
  	    "writes to the SMMU, the global ones (cbar, cba2r, s2cr, smr) through the hypervisor");
@@ -79,7 +79,7 @@ index 4f2f7d6..0d1e897 100644
  	gmu_space_is_on = true;         /* whatever of it has been written by the time something fails is taken back */
  	return space_on(&gmu_space, GMU_MATCH, GMU_STREAM);
  }
-@@ -3309,6 +3323,27 @@ static bool (*const step_at[])(void) = {
+@@ -3310,6 +3324,27 @@ static bool (*const step_at[])(void) = {
  	step_gmu_space, step_gmu_firmware, step_gmu_start, step_gmu_queues,
  	step_core_power, step_core_space, step_zap_load, step_core_start, step_core_commands,
  };
@@ -210,7 +210,7 @@ index 1da5cc6..05711c4 100644
  }
  
 diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
-index 437adb1..e07a15b 100644
+index 437adb1..2491805 100644
 --- a/osfmk/kern/debug.c
 +++ b/osfmk/kern/debug.c
 @@ -1074,6 +1074,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
@@ -223,13 +223,3 @@ index 437adb1..e07a15b 100644
  	sweet_early_panic(panic_format_str, panic_args);
  #endif
  
-@@ -1086,6 +1089,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
- 
- 	/* call machine-layer panic handler */
- 	ml_panic_trap_to_debugger(panic_format_str, panic_args, reason, ctx, panic_options_mask, panic_caller);
-+#if defined(__arm64__)
-+	sweet_log_flush_now();
-+#endif
- 
- 	/* track depth of debugger/panic entry */
- 	CPUDEBUGGERCOUNT++;
