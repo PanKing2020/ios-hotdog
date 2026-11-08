@@ -1,0 +1,143 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
+
++++ b/bsd/dev/sweet_gpu_adreno.c
+
+@@ -3294,6 +3294,42 @@
+
+ 		second_space_is_on = false;
+
+ 	}
+
+ }
+
++
+
++/* ---- step 22: a colour the GPU writes into the panel's framebuffer -------------------------------- */
+
++
+
++#define FB_PA           0x9c000000ull          /* the ABL's continuous splash, still scanned out */
+
++#define FB_STRIDE       5760u                  /* 1440 pixels of 4 bytes */
+
++#define FB_COLOUR       0xff00ff00u            /* opaque green, ARGB */
+
++#define FB_ROWS         64u
+
++#define FB_COLUMNS      256u
+
++#define FB_VA           0x30000000ull          /* an address the core's space does not use yet */
+
++
+
++static bool
+
++step_fb_write(void)
+
++{
+
++	uint64_t size = (uint64_t)FB_ROWS * FB_STRIDE;
+
++
+
++	for (uint64_t offset = 0; offset < size; offset += 4096) {
+
++		if (!space_map(&core_space, FB_VA + offset, FB_PA + offset, PTE_CORE)) {
+
++			return false;
+
++		}
+
++	}
+
++	for (uint32_t row = 0; row < FB_ROWS; row++) {
+
++		for (uint32_t column = 0; column < FB_COLUMNS; column++) {
+
++			ring_command(CP_MEM_WRITE, 3);
+
++			ring((uint32_t)(FB_VA + row * FB_STRIDE + column * 4));
+
++			ring(0);
+
++			ring(FB_COLOUR);
+
++		}
+
++		if (!ring_run("write a row of the framebuffer")) {
+
++			return false;
+
++		}
+
++	}
+
++	printf("SWEETADRENO: 22: %u rows of %u pixels written into the framebuffer at %#llx\n",
+
++	    FB_ROWS, FB_COLUMNS, FB_PA);
+
++	return true;
+
++}
+
++
+
+ /* ---- all of it together ---------------------------------------------------------------------------- */
+
+ 
+
+ /*
+
+@@ -3391,11 +3427,19 @@
+
+ 		gpu_block_stop();
+
+ 		return;
+
+ 	}
+
+-	if (stage == phase_count) {
+
+-		printf("SWEETADRENO: step 22 (a frame drawn by the GPU and shown on the panel) is deferred in this version\n");
+
+-	}
+
+-	gpu_block_stop();
+
+-	printf("SWEETADRENO: all requested stages done; the GPU block is put back as it was found\n");
+
++	int fb_test = 0, keep = 0;
+
++
+
++	if (PE_parse_boot_argn("sweetadreno_fb", &fb_test, sizeof(fb_test)) && fb_test) {
+
++		if (step_fb_write()) {
+
++			printf("SWEETADRENO: step 22: the framebuffer carries the GPU's colour\n");
+
++		}
+
++	}
+
++	if (PE_parse_boot_argn("sweetadreno_keep", &keep, sizeof(keep)) && keep) {
+
++		printf("SWEETADRENO: the GPU block is kept as this run left it (sweetadreno_keep)\n");
+
++	} else {
+
++		gpu_block_stop();
+
++		printf("SWEETADRENO: all requested stages done; the GPU block is put back as it was found\n");
+
++	}
+
+ 	/*
+
+ 	 * Test halt (sweetadreno_panic=1): the staged run is over, so stop the machine and let the
+
+ 	 * watchdog bring it back to fastboot -- the log ring with the output is already out, and an
+
