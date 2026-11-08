@@ -12,10 +12,10 @@ index da3bc2e..dce3f71 100644
  bsd/dev/sweet_rpmh.c			standard
 diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
 new file mode 100644
-index 0000000..4f2f7d6
+index 0000000..c3b7212
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_adreno.c
-@@ -0,0 +1,3400 @@
+@@ -0,0 +1,3411 @@
 +/*
 + * Adreno 640 (SM8150, OnePlus 7 Pro "guacamole") bring-up for the sweet XNU
 + * tree: the HakiOS driver drivers/gpu/hakios.adreno.c (4198 lines) with the
@@ -75,6 +75,7 @@ index 0000000..4f2f7d6
 +#include <vm/pmap.h>
 +#include <vm/vm_kern.h>
 +#include <vm/memory_types.h>
++#include <kern/debug.h>		/* panic() for the test halt */
 +
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +extern uint64_t kvtophys(vm_offset_t va);		/* pmap_paddr_t (the driver had it at drv:108) */
@@ -3413,6 +3414,16 @@ index 0000000..4f2f7d6
 +	}
 +	gpu_block_stop();
 +	printf("SWEETADRENO: all requested stages done; the GPU block is put back as it was found\n");
++	/*
++	 * Test halt (sweetadreno_panic=1): the staged run is over, so stop the machine and let the
++	 * watchdog bring it back to fastboot -- the log ring with the output is already out, and an
++	 * unattended test loop needs no physical reset between stages.
++	 */
++	int test_halt = 0;
++	if (PE_parse_boot_argn("sweetadreno_panic", &test_halt, sizeof(test_halt)) && test_halt) {
++		printf("SWEETADRENO: test halt after stage %d (sweetadreno_panic=%d)\n", stage, test_halt);
++		panic("SWEETADRENO: test halt after stage %d", stage);
++	}
 +}
 +
 +#endif /* ARM64_BOARD_CONFIG_GUACAMOLE */
