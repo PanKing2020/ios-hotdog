@@ -1,0 +1,143 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 3f00a39..02bae82 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -116,6 +116,8 @@ public:
+ 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
++	bool          fScaling;       /* present the logical frame scaled to the panel */
++	uint32_t     *fXMap, *fYMap;  /* panel pixel -> logical pixel */
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+@@ -166,8 +168,13 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: no boot framebuffer\n");
+ 		return false;
+ 	}
+-	int native = 0;
++	int native = 0, scaling = 0;
++	uint32_t want_w = 0, want_h = 0;
++
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
++	PE_parse_boot_argn("sweetfb_scale", &scaling, sizeof(scaling));
++	PE_parse_boot_argn("sweetfb_w", &want_w, sizeof(want_w));
++	PE_parse_boot_argn("sweetfb_h", &want_h, sizeof(want_h));
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
+ 	if (!native) {
+@@ -181,8 +188,29 @@ AppleCLCD::start(IOService *provider)
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
+ 	}
++	if (want_w >= 320 && want_h >= 320) {
++		fLogicalW = want_w;
++		fLogicalH = want_h;
++	}
+ 	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	/* sweetfb_scale=1: the userland keeps the logical size (e.g. iPhone X) and the panel gets
++	 * the frame scaled to its own size, so the screen is filled instead of letterboxed. */
++	fScaling = scaling != 0 && (fLogicalW != fWidth || fLogicalH != fHeight);
++	if (fScaling) {
++		fXMap = (uint32_t *)IOMalloc((size_t)fWidth * sizeof(uint32_t));
++		fYMap = (uint32_t *)IOMalloc((size_t)fHeight * sizeof(uint32_t));
++		if (fXMap == NULL || fYMap == NULL) {
++			fScaling = false;
++		} else {
++			for (uint32_t i = 0; i < fWidth; i++) {
++				fXMap[i] = (uint32_t)((uint64_t)i * fLogicalW / fWidth);
++			}
++			for (uint32_t i = 0; i < fHeight; i++) {
++				fYMap[i] = (uint32_t)((uint64_t)i * fLogicalH / fHeight);
++			}
++		}
++	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -360,6 +388,27 @@ AppleCLCD::present(const uint8_t *rec)
+ 			w = (int32_t)s->width;
+ 			h = (int32_t)s->height;
+ 		}
++		if (fScaling) {
++			/* The userland's frame (the logical display) becomes the panel's, scaled. Only the
++			 * frame that is the logical display is scaled; other layers are left alone. */
++			if (src != 0 && bpe == 4 && s->memory != NULL && s->bytesPerRow >= s->width * 4 &&
++			    s->width == fLogicalW && s->height == fLogicalH && fXMap != NULL && fYMap != NULL) {
++				uint32_t sw = s->width, sh = s->height, sbpr = s->bytesPerRow;
++
++				for (uint32_t y = 0; y < fHeight; y++) {
++					uint32_t ly = fYMap[y];
++					uint32_t *d = (uint32_t *)(fPixels + (uint64_t)y * fRowBytes);
++					const uint32_t *r = (const uint32_t *)(src + s->offset + (uint64_t)(ly < sh ? ly : sh - 1) * sbpr);
++
++					for (uint32_t x = 0; x < fWidth; x++) {
++						uint32_t lx = fXMap[x];
++						d[x] = r[lx < sw ? lx : sw - 1];
++					}
++				}
++			}
++			s->release();
++			continue;
++		}
+ 		if (sx < 0 || sy < 0) {
+ 			sx = sy = 0;
+ 		}
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 0136e09..0e44172 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -368,7 +368,7 @@ protected:
+ 	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 2; }
+ private:
+ 	IOLock *fLock;
+-	int fLogicalW, fLogicalH, fOffX, fOffY;
++	int fLogicalW, fLogicalH, fOffX, fOffY, fScaling;
+ 	bool fDown[SWEET_TOUCH_FINGERS];
+ 	bool fEdge[SWEET_TOUCH_FINGERS];
+ 	IOFixed fX[SWEET_TOUCH_FINGERS];
+@@ -433,10 +433,23 @@ SweetHIDTouch::start(IOService *provider)
+ 	if (!fLock || !IOHIDEventService::start(provider)) {
+ 		return false;
+ 	}
+-	int native = 0;
++	int native = 0, scaling = 0;
++	uint32_t want_w = 0, want_h = 0;
++
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
++	PE_parse_boot_argn("sweetfb_scale", &scaling, sizeof(scaling));
++	PE_parse_boot_argn("sweetfb_w", &want_w, sizeof(want_w));
++	PE_parse_boot_argn("sweetfb_h", &want_h, sizeof(want_h));
++	fScaling = scaling != 0;
+ 	fLogicalW = native ? SWEET_DEV_FB_W : 1125;
+ 	fLogicalH = native ? SWEET_DEV_FB_H : 2436;
++	if (want_w >= 320 && want_h >= 320) {
++		fLogicalW = (int)want_w;
++		fLogicalH = (int)want_h;
++	}
++	if (fScaling && fLogicalW == SWEET_DEV_FB_W && fLogicalH == SWEET_DEV_FB_H) {
++		fScaling = 0;
++	}
+ 	fOffX = (fLogicalW - SWEET_DEV_FB_W) / 2;
+ 	fOffY = (fLogicalH - SWEET_DEV_FB_H) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+@@ -465,9 +478,15 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+-	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
+-	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+-	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	/* Panel pixels -> the presented display (SweetFramebuffer.cpp): scaled if the frame is. */
++	IOFixed nx, ny;
++	if (fScaling) {
++		nx = (IOFixed)(((int64_t)x * fLogicalW << 16) / SWEET_DEV_FB_W);
++		ny = (IOFixed)(((int64_t)y * fLogicalH << 16) / SWEET_DEV_FB_H);
++	} else {
++		nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
++		ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	}
+ 	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
+ 		IOLockUnlock(fLock);
