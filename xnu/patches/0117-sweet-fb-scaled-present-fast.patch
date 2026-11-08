@@ -1,0 +1,42 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -118,6 +118,7 @@
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
+ 	bool          fScaling;       /* present the logical frame scaled to the panel */
+ 	uint32_t     *fXMap, *fYMap;  /* panel pixel -> logical pixel */
++	uint32_t     *fRowBuf;        /* one logical row, so the source is read in order */
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+@@ -209,6 +210,10 @@
+ 			for (uint32_t i = 0; i < fHeight; i++) {
+ 				fYMap[i] = (uint32_t)((uint64_t)i * fLogicalH / fHeight);
+ 			}
++			fRowBuf = (uint32_t *)IOMalloc((size_t)fLogicalW * 4);
++			if (fRowBuf == NULL) {
++				fScaling = false;
++			}
+ 		}
+ 	}
+ 	fLock = IOLockAlloc();
+@@ -400,9 +405,17 @@
+ 					uint32_t *d = (uint32_t *)(fPixels + (uint64_t)y * fRowBytes);
+ 					const uint32_t *r = (const uint32_t *)(src + s->offset + (uint64_t)(ly < sh ? ly : sh - 1) * sbpr);
+ 
++					/* Read the source row in order into a small buffer, then write the panel
++					 * row in order: the surface and the panel are mapped for bursts and
++					 * pixel-by-pixel random access here is what made a frame take forever. */
++					memcpy(fRowBuf, r, (size_t)(sw < fLogicalW ? sw : fLogicalW) * 4);
++					if (sw < fLogicalW) {
++						for (uint32_t x = sw; x < fLogicalW; x++) {
++							fRowBuf[x] = fRowBuf[sw - 1];
++						}
++					}
+ 					for (uint32_t x = 0; x < fWidth; x++) {
+-						uint32_t lx = fXMap[x];
+-						d[x] = r[lx < sw ? lx : sw - 1];
++						d[x] = fRowBuf[fXMap[x]];
+ 					}
+ 				}
+ 			}
