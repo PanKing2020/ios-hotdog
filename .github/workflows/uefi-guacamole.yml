@@ -52,6 +52,14 @@ jobs:
           python -m pip install -r pip-requirements.txt
           python build_uefi.py -d guacamole -r DEBUG
 
+      - name: Rebuild BootShim with the XNUP payload base
+        run: |
+          cd mu
+          make -C BootShim clean || true
+          make -C BootShim REQUIRES_KERNEL_HEADER=1 FD_BASE=0x9FC00000 FD_SIZE=0x300000 \
+            CFLAGS="--target=aarch64-linux-gnu -DPAYLOAD_BASE=0xF0000000"
+          cp -v BootShim/BootShim.bin out/BootShim.bin
+          ls -l out/BootShim.bin
       - name: Collect outputs
         if: always()
         run: |
