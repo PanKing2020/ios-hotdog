@@ -1,0 +1,64 @@
+name: uefi-guacamole
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack guacamole sources
+        run: unzip -o ci-guacamole-uefi.zip -d src
+
+      - name: Clone Mu-Silicium at the pinned commit
+        run: |
+          git clone https://github.com/Project-Silicium/Mu-Silicium.git mu
+          cd mu
+          git checkout e51cd877e31c8fbb322032dc4cb6715e83d25ad3
+          git submodule update --init --recursive
+
+      - name: Install build dependencies
+        run: |
+          cd mu
+          ./setup_env.sh -p apt || sudo ./setup_env.sh -p apt
+
+      - name: Apply the HackiOS port and our device package
+        run: |
+          cd mu
+          git apply --whitespace=nowarn ../src/devices/guacamole/uefi/mu-silicium.patch
+          cp -r ../src/devices/guacamole/uefi/files/. .
+          mkdir -p Binaries
+          rm -rf Binaries/guacamole
+          cp -r ../src/Binaries/guacamole Binaries/
+          echo "--- device package present:"
+          ls Platforms/OnePlus/guacamolePkg
+          echo "--- binaries:"
+          find Binaries/guacamole -name '*.inf' | wc -l
+
+      - name: Build UEFI
+        run: |
+          cd mu
+          python3 -m pip install -r pip-requirements.txt
+          python3 build_uefi.py -d guacamole -r DEBUG
+
+      - name: Collect outputs
+        if: always()
+        run: |
+          mkdir -p out
+          cp -v mu/BootShim/BootShim.bin out/ 2>/dev/null || true
+          find mu/Build/guacamolePkg -name '*.fd' -exec cp -v {} out/ \; 2>/dev/null || true
+          ls -la out || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-guacamole
+          path: |
+            out/**
+            mu/Build/guacamolePkg/**
+          if-no-files-found: warn
