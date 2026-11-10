@@ -1,0 +1,128 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -3344,6 +3344,112 @@
+ 	return true;
+ }
+ 
++/* ---- the buffers a client will hand the GPU (the kernel half of the user ABI) ---------------------- */
++
++#define BO_VA_BASE      0x40000000ull
++#define BO_MAX          16
++
++struct sweet_bo {
++	uint64_t address;               /* the GPU's view of it */
++	uint32_t size;
++	vm_offset_t memory;             /* ours */
++	bool used;
++};
++
++static struct sweet_bo sweet_bos[BO_MAX];
++static uint64_t sweet_bo_next = BO_VA_BASE;
++
++static struct sweet_bo *
++sweet_bo_new(uint32_t size)
++{
++	struct sweet_bo *bo = NULL;
++
++	size = (size + 4095) & ~4095u;
++	for (int i = 0; i < BO_MAX; i++) {
++		if (!sweet_bos[i].used) {
++			bo = &sweet_bos[i];
++			break;
++		}
++	}
++	if (bo == NULL || size == 0) {
++		printf("SWEETADRENO: bo: no free buffer for %u bytes\n", size);
++		return NULL;
++	}
++	if (kmem_alloc(kernel_map, &bo->memory, size, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEETADRENO: bo: cannot make %u bytes\n", size);
++		return NULL;
++	}
++	bo->address = sweet_bo_next;
++	bo->size = size;
++	for (uint32_t offset = 0; offset < size; offset += 4096) {
++		if (!space_map(&core_space, bo->address + offset, kvtophys(bo->memory + offset), PTE_CORE)) {
++			kmem_free(kernel_map, bo->memory, size);
++			return NULL;
++		}
++	}
++	sweet_bo_next += size;
++	bo->used = true;
++	printf("SWEETADRENO: bo: %u bytes at %#llx for the GPU, %#llx ours\n", size, bo->address,
++	    kvtophys(bo->memory));
++	return bo;
++}
++
++static void
++sweet_bo_free(struct sweet_bo *bo)
++{
++	if (bo == NULL || !bo->used) {
++		return;
++	}
++	for (uint32_t offset = 0; offset < bo->size; offset += 4096) {
++		space_map(&core_space, bo->address + offset, 0, 0);
++	}
++	kmem_free(kernel_map, bo->memory, bo->size);
++	bo->used = false;
++}
++
++/*
++ * What a client's first submission will do, done here first: two buffers of different sizes, one command
++ * that writes into each, the ring read back to empty, and the words read out of our own memory.
++ */
++static bool
++sweet_bo_test(void)
++{
++	struct sweet_bo *small = sweet_bo_new(0x1000), *large = sweet_bo_new(0x2000);
++	volatile uint32_t *a, *b;
++	bool ok = true;
++
++	if (small == NULL || large == NULL) {
++		return false;
++	}
++	a = (volatile uint32_t *)small->memory;
++	b = (volatile uint32_t *)large->memory;
++	for (uint32_t i = 0; i < 16; i++) {
++		ring_command(CP_MEM_WRITE, 3);
++		ring((uint32_t)(small->address + i * 4));
++		ring(0);
++		ring(0xb0b00000u | i);
++		ring_command(CP_MEM_WRITE, 3);
++		ring((uint32_t)(large->address + 0x1000 + i * 4));
++		ring(0);
++		ring(0xd0d00000u | i);
++	}
++	ok = ring_run("write its two buffers");
++	to_memory(small->memory, 64);
++	to_memory(large->memory + 0x1000, 64);
++	for (uint32_t i = 0; i < 16 && ok; i++) {
++		if (a[i] != (0xb0b00000u | i) || b[0x400 + i] != (0xd0d00000u | i)) {
++			printf("SWEETADRENO: bo: word %u reads %#x and %#x, wanted %#x and %#x\n", i, a[i], b[0x400 + i],
++			    0xb0b00000u | i, 0xd0d00000u | i);
++			ok = false;
++		}
++	}
++	printf("SWEETADRENO: bo: the 3D core writes two buffers of ours on command: %s\n", ok ?
++	    "THE BUFFERS WORK" : "not what it was told to write");
++	sweet_bo_free(small);
++	sweet_bo_free(large);
++	return ok;
++}
++
+ /* ---- all of it together ---------------------------------------------------------------------------- */
+ 
+ /*
+@@ -3469,6 +3575,11 @@
+ 			printf("SWEETADRENO: step 22: the framebuffer carries the GPU's colour\n");
+ 		}
+ 	}
++	int bo_test = 0;
++
++	if (PE_parse_boot_argn("sweetadreno_bo", &bo_test, sizeof(bo_test)) && bo_test) {
++		sweet_bo_test();
++	}
+ 	if (PE_parse_boot_argn("sweetadreno_keep", &keep, sizeof(keep)) && keep) {
+ 		printf("SWEETADRENO: the GPU block is kept as this run left it (sweetadreno_keep)\n");
+ 	} else {
