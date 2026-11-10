@@ -1,0 +1,117 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -1308,6 +1308,42 @@
+ 	}
+ }
+ 
++/* ---- the buffer pool: mapped while the 3D core's context is still off --------------------------------- */
++
++#define BO_POOL_BYTES   (8u * 1024 * 1024)
++#define BO_VA_BASE      0x40000000ull
++
++static vm_offset_t bo_pool_memory;
++static uint32_t bo_pool_used;
++
++/*
++ * The SMMU reads the page tables from memory, and a translation it has already walked is kept. A
++ * mapping made while the context is off is flushed with all the others by space_on(); one made after
++ * that is not, which is why the buffer pool is reserved here instead of at the first client.
++ */
++static bool
++sweet_bo_pool_init(void)
++{
++	if (bo_pool_memory != 0) {
++		return true;
++	}
++	if (kmem_alloc(kernel_map, &bo_pool_memory, BO_POOL_BYTES, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
++	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEETADRENO: bo: cannot make the buffer pool\n");
++		return false;
++	}
++	for (uint32_t offset = 0; offset < BO_POOL_BYTES; offset += 4096) {
++		if (!space_map(&core_space, BO_VA_BASE + offset, kvtophys(bo_pool_memory + offset), PTE_CORE)) {
++			printf("SWEETADRENO: bo: cannot map the buffer pool\n");
++			return false;
++		}
++	}
++	bo_pool_used = 0;
++	printf("SWEETADRENO: bo: %u KiB of buffers at %#llx for the GPU, %#llx ours\n", BO_POOL_BYTES / 1024,
++	    BO_VA_BASE, kvtophys(bo_pool_memory));
++	return true;
++}
++
+ static uint64_t *
+ space_next(struct gpu_space *space, uint64_t *entry)
+ {
+@@ -2824,7 +2860,8 @@
+ 	if (microcode == NULL || size < 8 || size > 0x40000 ||
+ 	    !block_new(&core_space, &core_ring, CORE_RING_ADDRESS, CORE_RING_SIZE, PTE_CORE) ||
+ 	    !block_new(&core_space, &core_sqe, CORE_SQE_ADDRESS, (uint32_t)size - 4, PTE_CORE | PTE_READ_ONLY) ||
+-	    !block_new(&core_space, &core_scratch, CORE_SCRATCH_ADDRESS, 4096, PTE_CORE)) {
++	    !block_new(&core_space, &core_scratch, CORE_SCRATCH_ADDRESS, 4096, PTE_CORE) ||
++	    !sweet_bo_pool_init()) {
+ 		return false;
+ 	}
+ 	memcpy((void *)core_sqe.memory, microcode + 4, size - 4);       /* the file's first word is not microcode */
+@@ -3404,31 +3441,26 @@
+ 	struct sweet_bo *bo = NULL;
+ 
+ 	size = (size + 4095) & ~4095u;
++	if (bo_pool_memory == 0 || size == 0 || bo_pool_used + size > BO_POOL_BYTES) {
++		printf("SWEETADRENO: bo: no free buffer for %u bytes (%u of %u used)\n", size, bo_pool_used,
++		    BO_POOL_BYTES);
++		return NULL;
++	}
+ 	for (int i = 0; i < BO_MAX; i++) {
+ 		if (!sweet_bos[i].used) {
+ 			bo = &sweet_bos[i];
+ 			break;
+ 		}
+ 	}
+-	if (bo == NULL || size == 0) {
+-		printf("SWEETADRENO: bo: no free buffer for %u bytes\n", size);
++	if (bo == NULL) {
++		printf("SWEETADRENO: bo: no free handle\n");
+ 		return NULL;
+ 	}
+-	if (kmem_alloc(kernel_map, &bo->memory, size, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEETADRENO: bo: cannot make %u bytes\n", size);
+-		return NULL;
+-	}
+-	bo->address = sweet_bo_next;
++	bo->address = BO_VA_BASE + bo_pool_used;
++	bo->memory = bo_pool_memory + bo_pool_used;
+ 	bo->size = size;
+-	for (uint32_t offset = 0; offset < size; offset += 4096) {
+-		if (!space_map(&core_space, bo->address + offset, kvtophys(bo->memory + offset), PTE_CORE)) {
+-			kmem_free(kernel_map, bo->memory, size);
+-			return NULL;
+-		}
+-	}
+-	sweet_bo_next += size;
+ 	bo->used = true;
+-	sweet_bo_flush(&core_space);
++	bo_pool_used += size;
+ 	printf("SWEETADRENO: bo: %u bytes at %#llx for the GPU, %#llx ours\n", size, bo->address,
+ 	    kvtophys(bo->memory));
+ 	return bo;
+@@ -3437,14 +3469,10 @@
+ static void
+ sweet_bo_free(struct sweet_bo *bo)
+ {
+-	if (bo == NULL || !bo->used) {
+-		return;
+-	}
+-	for (uint32_t offset = 0; offset < bo->size; offset += 4096) {
+-		space_map(&core_space, bo->address + offset, 0, 0);
+-	}
+-	kmem_free(kernel_map, bo->memory, bo->size);
+-	bo->used = false;
++	/* the pool is mapped for good; only the handle goes back */
++	if (bo != NULL) {
++		bo->used = false;
++	}
+ }
+ 
+ /*
