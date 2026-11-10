@@ -1,0 +1,42 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -3389,6 +3389,7 @@
+ 	}
+ 	sweet_bo_next += size;
+ 	bo->used = true;
++	space_commit(&core_space);
+ 	printf("SWEETADRENO: bo: %u bytes at %#llx for the GPU, %#llx ours\n", size, bo->address,
+ 	    kvtophys(bo->memory));
+ 	return bo;
+@@ -3433,9 +3434,30 @@
+ 		ring(0);
+ 		ring(0xd0d00000u | i);
+ 	}
++	/* the scratch block is the control: step 21 already wrote it through the same ring */
++	ring_command(CP_MEM_WRITE, 3);
++	ring(CORE_SCRATCH_ADDRESS);
++	ring(0);
++	ring(0x5c2a7c40);
+ 	ok = ring_run("write its two buffers");
+ 	to_memory(small->memory, 64);
+ 	to_memory(large->memory + 0x1000, 64);
++	to_memory(core_scratch.memory, 64);
++	printf("SWEETADRENO: bo: scratch reads %#x (wanted 0x5c2a7c40)\n",
++	    ((volatile uint32_t *)core_scratch.memory)[0]);
++	printf("SWEETADRENO: bo: small reads");
++	for (uint32_t i = 0; i < 16; i++) {
++		printf(" %#x", a[i]);
++	}
++	printf("\n");
++	printf("SWEETADRENO: bo: large reads");
++	for (uint32_t i = 0; i < 16; i++) {
++		printf(" %#x", b[0x400 + i]);
++	}
++	printf("\n");
++	printf("SWEETADRENO: bo: smmu cb%u fsr %#x, cp fault %#x, rbbm status %#x\n", core_space.context,
++	    rd(smmu.base + smmu_context(&core_space) + SMMU_CB_FSR), rd(gpu.base + CP_HW_FAULT),
++	    rd(gpu.base + RBBM_STATUS));
+ 	for (uint32_t i = 0; i < 16 && ok; i++) {
+ 		if (a[i] != (0xb0b00000u | i) || b[0x400 + i] != (0xd0d00000u | i)) {
+ 			printf("SWEETADRENO: bo: word %u reads %#x and %#x, wanted %#x and %#x\n", i, a[i], b[0x400 + i],
