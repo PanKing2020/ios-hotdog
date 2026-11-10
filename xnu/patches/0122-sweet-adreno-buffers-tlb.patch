@@ -1,0 +1,76 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -3359,6 +3359,45 @@
+ static struct sweet_bo sweet_bos[BO_MAX];
+ static uint64_t sweet_bo_next = BO_VA_BASE;
+ 
++/* What the page table says about one address, the way space_map walks it. */
++static uint64_t
++sweet_bo_pte(struct gpu_space *space, uint64_t address)
++{
++	uint64_t *table = space->root;
++
++	for (int level = 0; level < 2; level++) {
++		uint64_t entry = table[(address >> (30 - 9 * level)) & 0x1ff];
++		uint64_t *next = NULL;
++
++		if (!(entry & 1)) {
++			return 0;
++		}
++		for (uint32_t i = 0; i < space->table_count; i++) {
++			if (space->tables[i].phys == (entry & PTE_ADDRESS)) {
++				next = space->tables[i].table;
++				break;
++			}
++		}
++		if (next == NULL) {
++			return entry;
++		}
++		table = next;
++	}
++	return table[(address >> 12) & 0x1ff];
++}
++
++/* Make the SMMU forget what it walked before: space_on() does the same when it switches a context on. */
++static void
++sweet_bo_flush(struct gpu_space *space)
++{
++	uint32_t context = smmu_context(space);
++
++	space_commit(space);
++	put(&smmu, "cb tlbiasid", context + SMMU_CB_TLBIASID, context);
++	put(&smmu, "cb tlbsync", context + SMMU_CB_TLBSYNC, 1);
++	wait_for(&smmu, context + SMMU_CB_TLBSTATUS, 1, 0, 100);
++}
++
+ static struct sweet_bo *
+ sweet_bo_new(uint32_t size)
+ {
+@@ -3389,7 +3428,7 @@
+ 	}
+ 	sweet_bo_next += size;
+ 	bo->used = true;
+-	space_commit(&core_space);
++	sweet_bo_flush(&core_space);
+ 	printf("SWEETADRENO: bo: %u bytes at %#llx for the GPU, %#llx ours\n", size, bo->address,
+ 	    kvtophys(bo->memory));
+ 	return bo;
+@@ -3439,6 +3478,7 @@
+ 	ring(CORE_SCRATCH_ADDRESS);
+ 	ring(0);
+ 	ring(0x5c2a7c40);
++	put(&smmu, "cb fsr", smmu_context(&core_space) + SMMU_CB_FSR, SMMU_FSR_ALL);
+ 	ok = ring_run("write its two buffers");
+ 	to_memory(small->memory, 64);
+ 	to_memory(large->memory + 0x1000, 64);
+@@ -3458,6 +3498,9 @@
+ 	printf("SWEETADRENO: bo: smmu cb%u fsr %#x, cp fault %#x, rbbm status %#x\n", core_space.context,
+ 	    rd(smmu.base + smmu_context(&core_space) + SMMU_CB_FSR), rd(gpu.base + CP_HW_FAULT),
+ 	    rd(gpu.base + RBBM_STATUS));
++	printf("SWEETADRENO: bo: pte small %#llx, large %#llx, scratch %#llx\n",
++	    sweet_bo_pte(&core_space, small->address), sweet_bo_pte(&core_space, large->address),
++	    sweet_bo_pte(&core_space, CORE_SCRATCH_ADDRESS));
+ 	for (uint32_t i = 0; i < 16 && ok; i++) {
+ 		if (a[i] != (0xb0b00000u | i) || b[0x400 + i] != (0xd0d00000u | i)) {
+ 			printf("SWEETADRENO: bo: word %u reads %#x and %#x, wanted %#x and %#x\n", i, a[i], b[0x400 + i],
