@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
       - name: Checkout
@@ -34,7 +34,7 @@ jobs:
           mkdir -p Binaries
           rm -rf Binaries/guacamole
           cp -r ../src/Binaries/guacamole Binaries/
-          echo "--- device package present:"
+          echo "--- device package:"
           ls Platforms/OnePlus/guacamolePkg
           echo "--- binaries:"
           find Binaries/guacamole -name '*.inf' | wc -l
@@ -42,8 +42,12 @@ jobs:
       - name: Build UEFI
         run: |
           cd mu
-          python3 -m pip install -r pip-requirements.txt
-          python3 build_uefi.py -d guacamole -r DEBUG
+          python3 --version
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r pip-requirements.txt
+          python build_uefi.py -d guacamole -r DEBUG
 
       - name: Collect outputs
         if: always()
