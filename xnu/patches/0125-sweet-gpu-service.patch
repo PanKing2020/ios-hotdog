@@ -1,0 +1,268 @@
+diff --git a/bsd/dev/sweet_gpu_adreno.c b/bsd/dev/sweet_gpu_adreno.c
+--- a/bsd/dev/sweet_gpu_adreno.c
++++ b/bsd/dev/sweet_gpu_adreno.c
+@@ -3594,6 +3594,255 @@
+  * gpu_block_stop() returns the GPU block to the state the phone's own start
+  * leaves it in (the driver's order at drv:3183-3269).
+  */
++
++/* ---- the service a client reaches through the IOKit node (the kernel half of the GPU ABI) ---------- */
++
++#define CP_INDIRECT_BUFFER      0x3f
++#define EVENT_CACHE_FLUSH       0x04
++#define EVENT_INVALIDATE_DEPTH  0x18
++#define EVENT_INVALIDATE_COLOR  0x19
++#define SWEET_FENCE_AT          0x40u           /* inside the scratch page */
++
++static uint32_t sweet_fence;                    /* the last one handed to a client */
++static bool     sweet_kept;                     /* the block was left running for clients */
++
++uint32_t gpu_log;                       /* the client's tracing level (hakios.gpu.cpp writes it) */
++
++void
++hakios_tl(const char *format, ...)
++{
++	va_list ap;
++
++	va_start(ap, format);
++	vprintf(format, ap);
++	va_end(ap);
++}
++
++extern void HakiosGPUStart(void);
++
++static struct sweet_bo *
++sweet_bo_at(uint64_t address)
++{
++	for (int i = 0; i < BO_MAX; i++) {
++		if (sweet_bos[i].used && sweet_bos[i].address == address) {
++			return &sweet_bos[i];
++		}
++	}
++	return NULL;
++}
++
++bool
++hakios_gpu_ready(void)
++{
++	return sweet_kept;
++}
++
++uint32_t
++hakios_gpu_last(void)
++{
++	return sweet_fence;
++}
++
++bool
++hakios_gpu_parameter(uint32_t which, uint64_t *value)
++{
++	if (value == NULL) {
++		return false;
++	}
++	switch (which) {
++	case 0x04:                              /* the clock that goes on while the machine sleeps */
++		*value = mach_absolute_time();
++		return true;
++	case 0x0c:                              /* where the core's addresses start */
++		*value = BO_VA_BASE;
++		return true;
++	case 0x0d:                              /* and how many bytes there are of them */
++		*value = 0x40000000ull;
++		return true;
++	default:
++		return false;
++	}
++}
++
++uint64_t
++hakios_gpu_address(uint64_t size)
++{
++	struct sweet_bo *bo;
++
++	if (!sweet_kept || size == 0 || size > BO_POOL_BYTES) {
++		return 0;
++	}
++	bo = sweet_bo_new((uint32_t)size);
++	return bo != NULL ? bo->address : 0;
++}
++
++void
++hakios_gpu_address_free(uint64_t address, uint64_t size)
++{
++	struct sweet_bo *bo = sweet_bo_at(address);
++
++	(void)size;
++	if (bo != NULL) {
++		sweet_bo_free(bo);
++	}
++}
++
++bool
++hakios_gpu_map(uint64_t address, uint64_t phys, bool read_only)
++{
++	uint64_t attributes = PTE_CORE | (read_only ? PTE_READ_ONLY : 0);
++
++	return space_map(&core_space, address, phys, attributes);
++}
++
++void
++hakios_gpu_mapped(void)
++{
++	sweet_bo_flush(&core_space);
++}
++
++void
++hakios_gpu_unmap(uint64_t address, uint64_t size)
++{
++	for (uint64_t offset = 0; offset < size; offset += 4096) {
++		space_map(&core_space, address + offset, 0, 0);
++	}
++	sweet_bo_flush(&core_space);
++}
++
++void
++hakios_gpu_to_memory(void *start, uint64_t size)
++{
++	to_memory((vm_offset_t)start, (vm_size_t)size);
++}
++
++uint32_t
++hakios_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t count)
++{
++	uint32_t wanted, room = 0;
++
++	if (!sweet_kept || addresses == NULL || words == NULL || count == 0) {
++		return 0;
++	}
++	if (count > 16) {
++		count = 16;
++	}
++	wanted = 8 + 3 * count + 6;
++	for (int i = 0; i < 20000; i++) {
++		room = (rd(gpu.base + CP_RB_RPTR) + RING_WORDS - ring_at - 1) % RING_WORDS;
++		if (room >= wanted) {
++			break;
++		}
++		sleep_us(100);
++	}
++	if (room < wanted) {
++		printf("SWEETADRENO: gpu: the ring is full: %u words of room, %u wanted\n", room, wanted);
++		return 0;
++	}
++	if (++sweet_fence == 0) {
++		sweet_fence = 1;
++	}
++	ring_command(CP_EVENT_WRITE, 1);
++	ring(EVENT_INVALIDATE_DEPTH);
++	ring_command(CP_EVENT_WRITE, 1);
++	ring(EVENT_INVALIDATE_COLOR);
++	for (uint32_t i = 0; i < count; i++) {
++		ring_command(CP_INDIRECT_BUFFER, 3);
++		ring((uint32_t)addresses[i]);
++		ring((uint32_t)(addresses[i] >> 32));
++		ring(words[i]);
++	}
++	ring_command(CP_EVENT_WRITE, 1);
++	ring(EVENT_CACHE_FLUSH);
++	ring_command(CP_MEM_WRITE, 3);
++	ring((uint32_t)(CORE_SCRATCH_ADDRESS + SWEET_FENCE_AT));
++	ring(0);
++	ring(sweet_fence);
++	ring_send();
++	printf("SWEETADRENO: gpu: submission %u of %u command buffers, %u words of ring\n", sweet_fence, count, ring_at);
++	return sweet_fence;
++}
++
++bool
++hakios_gpu_done(uint32_t fence)
++{
++	volatile uint32_t *at = (volatile uint32_t *)(core_scratch.memory + SWEET_FENCE_AT);
++
++	if (fence == 0) {
++		return true;
++	}
++	to_memory(core_scratch.memory + SWEET_FENCE_AT, 4);
++	return *at >= fence;
++}
++
++void
++hakios_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7])
++{
++	if (microseconds != NULL) {
++		*microseconds = 0;
++	}
++	if (submissions != NULL) {
++		*submissions = sweet_fence;
++	}
++	if (by != NULL) {
++		for (int i = 0; i < 7; i++) {
++			by[i] = 0;
++		}
++	}
++}
++
++void
++hakios_gpu_report(const char *why)
++{
++	printf("SWEETADRENO: gpu: %s: submission %u is the last, the ring read up to %u, written up to %u; status %#x, "
++	    "interrupts %#x; command processor: fault %#x, interrupts %#x, protection %#x\n", why, sweet_fence,
++	    rd(gpu.base + CP_RB_RPTR), ring_at, rd(gpu.base + RBBM_STATUS), rd(gpu.base + RBBM_INT_0_STATUS),
++	    rd(gpu.base + CP_HW_FAULT), rd(gpu.base + CP_INTERRUPT_STATUS), rd(gpu.base + CP_PROTECT_STATUS));
++	if (space_faulted(&core_space)) {
++		put(&smmu, "cb fsr", smmu_context(&core_space) + SMMU_CB_FSR, SMMU_FSR_ALL);
++	}
++}
++
++void
++hakios_gpu_stop(void)
++{
++	if (!sweet_kept) {
++		return;
++	}
++	sweet_kept = false;
++	gpu_block_stop();
++	printf("SWEETADRENO: gpu: the block is put back as it was found\n");
++}
++
++/* What a client shows: the ABL's continuous splash, which the panel is still scanning out. */
++#define SHOW_PHYS       0x9c000000ll
++#define SHOW_STRIDE     5760u
++
++void
++MiniIOMobileFramebufferShow(const uint8_t *pixels, uint32_t width, uint32_t height, uint32_t rowBytes)
++{
++	static uint8_t *panel;
++	uint32_t rows = height, columns = width * 4, stride = SHOW_STRIDE;
++
++	if (panel == NULL) {
++		panel = (uint8_t *)ml_io_map(SHOW_PHYS, 1440 * 4 * 3120);
++	}
++	if (panel == NULL || pixels == NULL) {
++		return;
++	}
++	if (columns > stride) {
++		columns = stride;
++	}
++	if (rows > 3120) {
++		rows = 3120;
++	}
++	for (uint32_t row = 0; row < rows; row++) {
++		memcpy(panel + row * stride, pixels + row * rowBytes, columns);
++	}
++	to_memory((vm_offset_t)panel, (vm_size_t)stride * rows);
++	printf("SWEETADRENO: gpu: %u rows of %u pixels shown on the panel\n", rows, width);
++}
++
+ void
+ sweet_gpu_adreno_init(void)
+ {
+@@ -3675,6 +3924,8 @@
+ 	}
+ 	if (PE_parse_boot_argn("sweetadreno_keep", &keep, sizeof(keep)) && keep) {
+ 		printf("SWEETADRENO: the GPU block is kept as this run left it (sweetadreno_keep)\n");
++		sweet_kept = true;
++		HakiosGPUStart();
+ 	} else {
+ 		gpu_block_stop();
+ 		printf("SWEETADRENO: all requested stages done; the GPU block is put back as it was found\n");
