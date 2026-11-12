@@ -18,6 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Unpack guacamole sources
+        run: unzip -o ci-guacamole-uefi.zip -d src
+
       - name: Clone Mu-Silicium at the pinned commit
         run: |
           git clone https://github.com/Project-Silicium/Mu-Silicium.git mu
