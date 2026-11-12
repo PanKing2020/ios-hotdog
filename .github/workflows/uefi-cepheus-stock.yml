@@ -1,0 +1,68 @@
+name: uefi-cepheus-stock
+
+# A control experiment: the upstream Mu-Silicium package for cepheus (Xiaomi 9, SM8150), built with
+# nothing of ours applied. Its only purpose is to tell whether the launch chain (BootShim + FD at a
+# high address) works on this phone at all, or whether the guacamole package is what fails.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone Mu-Silicium at the pinned commit
+        run: |
+          git clone https://github.com/Project-Silicium/Mu-Silicium.git mu
+          cd mu
+          git checkout e51cd877e31c8fbb322032dc4cb6715e83d25ad3
+          git submodule update --init --recursive
+
+      - name: Install build dependencies
+        run: |
+          cd mu
+          ./setup_env.sh -p apt || sudo ./setup_env.sh -p apt
+
+      - name: Build the stock cepheus firmware
+        run: |
+          cd mu
+          python3 --version
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r pip-requirements.txt
+          python build_uefi.py -d cepheus -r DEBUG || true
+          echo "--- output:"
+          ls -la Build/cepheusPkg/*/FV/ 2>/dev/null || ls -la Build/ 2>/dev/null
+          ls -la BootShim/ 2>/dev/null
+
+      - name: Collect outputs
+        if: always()
+        run: |
+          mkdir -p out
+          cp -v mu/BootShim/BootShim.bin out/ 2>/dev/null || true
+          find mu/Build/cepheusPkg -maxdepth 3 -type f \( -name '*.fd' -o -name '*.img' -o -name '*kernel*' \) -exec cp -v {} out/ \; 2>/dev/null || true
+          cat mu/Resources/Configs/cepheus.toml 2>/dev/null || true
+          ls -la out || true
+
+      - name: Publish outputs into the repository
+        if: always()
+        run: |
+          mkdir -p build-cepheus
+          cp -f out/* build-cepheus/ 2>/dev/null || true
+          if [ -z "$(ls -A build-cepheus)" ]; then
+            echo "nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build-cepheus
+          git commit -m "cepheus stock uefi output" || true
+          git push || true
