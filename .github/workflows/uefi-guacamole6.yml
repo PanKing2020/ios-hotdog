@@ -81,7 +81,7 @@ jobs:
           from pathlib import Path
           p = Path("BootShim/BootShim.S")
           t = p.read_text()
-          marker = "  ldr   x5, =FD_BASE"
+          marker = "_Entry:"
           if marker not in t:
               raise SystemExit("BootShim marker not found")
           block = """  /* the copies above may still sit in the caches: write them out, drop stale lines */
