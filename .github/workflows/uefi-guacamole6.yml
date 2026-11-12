@@ -1,0 +1,166 @@
+name: uefi-guacamole
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack guacamole sources
+        run: unzip -o ci-guacamole-uefi.zip -d src
+
+      - name: Clone Mu-Silicium at the pinned commit
+        run: |
+          git clone https://github.com/Project-Silicium/Mu-Silicium.git mu
+          cd mu
+          git checkout e51cd877e31c8fbb322032dc4cb6715e83d25ad3
+          git submodule update --init --recursive
+
+      - name: Install build dependencies
+        run: |
+          cd mu
+          ./setup_env.sh -p apt || sudo ./setup_env.sh -p apt
+
+      - name: Apply the HackiOS port and our device package
+        run: |
+          cd mu
+          git apply --whitespace=nowarn ../src/devices/guacamole/uefi/mu-silicium.patch
+          cp -r ../src/devices/guacamole/uefi/files/. .
+          mkdir -p Binaries
+          rm -rf Binaries/guacamole
+          cp -r ../src/Binaries/guacamole Binaries/
+          echo "--- device package:"
+          ls Platforms/OnePlus/guacamolePkg
+          echo "--- binaries:"
+          find Binaries/guacamole -name '*.inf' | wc -l
+
+      - name: Move the UEFI working set out of ABL's region
+        run: |
+          cd mu
+          python3 - <<'PY'
+          from pathlib import Path
+          mm = Path("Platforms/OnePlus/guacamolePkg/Library/MemoryMapLib/MemoryMapLib.c")
+          t = mm.read_text()
+          pairs = [
+              ('{"UEFI FD", 0x9FC00000', '{"UEFI FD", 0xE0000000'),
+              ('{"SEC Heap", 0x9FF00000', '{"SEC Heap", 0xE0300000'),
+              ('{"CPU Vectors", 0x9FF8C000', '{"CPU Vectors", 0xE038C000'),
+              ('{"MMU PageTables", 0x9FF8D000', '{"MMU PageTables", 0xE038D000'),
+              ('{"USB UCSI Temp", 0x9FF90000', '{"USB UCSI Temp", 0xE0390000'),
+              ('{"Reserved", 0x9FF92000', '{"Reserved", 0xE0392000'),
+              ('{"UEFI Stack", 0x9FFB0000', '{"UEFI Stack", 0xE03B0000'),
+              ('{"Log Buffer", 0x9FFF7000', '{"Log Buffer", 0xE03F7000'),
+              ('{"Info Blk", 0x9FFFF000', '{"Info Blk", 0xE03FF000'),
+          ]
+          for old, new in pairs:
+              if old not in t:
+                  raise SystemExit("missing: " + old)
+              t = t.replace(old, new)
+          mm.write_text(t)
+          toml = Path("Resources/Configs/guacamole.toml")
+          s = toml.read_text().replace("base = 0x9FC00000", "base = 0xE0000000")
+          toml.write_text(s)
+          dsc = Path("Platforms/OnePlus/guacamolePkg/guacamole.dsc")
+          d = dsc.read_text().replace("PcdCPUCoresStackBase|0x9FFB0000", "PcdCPUCoresStackBase|0xE03B0000")
+          dsc.write_text(d)
+          print("relocated UEFI FD/SEC/stack to 0xE0xxxxxx")
+          PY
+          grep -n 'UEFI FD\|UEFI Stack' Platforms/OnePlus/guacamolePkg/Library/MemoryMapLib/MemoryMapLib.c | head -5
+      - name: Add cache maintenance to the boot shim
+        run: |
+          cd mu
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("BootShim/BootShim.S")
+          t = p.read_text()
+          marker = "  ldr   x5, =FD_BASE"
+          if marker not in t:
+              raise SystemExit("BootShim marker not found")
+          block = """  /* the copies above may still sit in the caches: write them out, drop stale lines */
+            mov   x7, #FD_BASE
+            mov   x8, #(FD_SIZE / 64)
+          _FlushFd:
+            dc    civac, x7
+            add   x7, x7, #64
+            subs  x8, x8, #1
+            b.ne  _FlushFd
+          #ifdef PAYLOAD_BASE
+            mov   x7, #PAYLOAD_BASE
+            mov   x8, #(0x00100000 / 64)
+          _FlushPay:
+            dc    civac, x7
+            add   x7, x7, #64
+            subs  x8, x8, #1
+            b.ne  _FlushPay
+          #endif
+            dsb   sy
+            ic    iallu
+            dsb   sy
+            isb
+
+          """
+          t = t.replace(marker, block + marker, 1)
+          p.write_text(t)
+          print("cache maintenance inserted")
+          PY
+          grep -n 'civac\|iallu\|dsb' BootShim/BootShim.S | head -8
+      - name: Build UEFI
+        run: |
+          cd mu
+          python3 --version
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r pip-requirements.txt
+          python build_uefi.py -d guacamole -r DEBUG
+
+      - name: Rebuild BootShim with the XNUP payload base
+        run: |
+          cd mu
+          rm -f BootShim/BootShim.bin BootShim/BootShim.elf BootShim/*.o
+          make -C BootShim REQUIRES_KERNEL_HEADER=1 FD_BASE=0xE0000000 FD_SIZE=0x300000 \
+            CFLAGS="--target=aarch64-linux-gnu -DPAYLOAD_BASE=0xF0000000"
+          mkdir -p out
+          cp -v BootShim/BootShim.bin out/BootShim.bin
+          ls -l out/BootShim.bin
+      - name: Collect outputs
+        if: always()
+        run: |
+          mkdir -p out
+          cp -v mu/BootShim/BootShim.bin out/ 2>/dev/null || true
+          cp -v mu/BootShim/BootShim.elf out/ 2>/dev/null || true
+          find mu/Build/guacamolePkg -maxdepth 3 -type f \( -name '*.fd' -o -name '*.img' -o -name '*kernel*' \) -exec cp -v {} out/ \; 2>/dev/null || true
+          ls -la out || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-guacamole
+          path: |
+            out/**
+            mu/Build/guacamolePkg/**
+          if-no-files-found: warn
+
+      - name: Publish outputs into the repository
+        if: always()
+        run: |
+          mkdir -p build-out
+          cp -f out/* build-out/ 2>/dev/null || true
+          if [ -z "$(ls -A build-out)" ]; then
+            echo "nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build-out
+          git commit -m "uefi build output" || true
+          git push || true
