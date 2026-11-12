@@ -1,0 +1,65 @@
+name: xnu-hakios
+
+# Build the HakiOS kernel (xnu-8796.121.2 + hakios.patch + files/) for the phone, the way their own
+# xnu-build.sh does it on macOS: Xcode's cctools act as the iPhone toolchain, and xnu-deps/setup.sh
+# links the iPhoneOS 16.5 SDK from github.com/theos/sdks. The result is
+# BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837, which xl uploads to the loader.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the HakiOS tree at the pinned commit
+        run: |
+          sha=57722468a3774e2ec60017705ec356ae9b31f40e
+          mkdir -p hk
+          curl -fsSL "https://codeload.github.com/HeliumStudio-Dev/hackios-xnu-kernel/tar.gz/${sha}" -o hk.tar.gz
+          tar -xzf hk.tar.gz -C hk --strip-components=1
+          ls hk | head -30
+          du -sh hk
+
+      - name: Apple's XNU plus the HakiOS work
+        run: |
+          cd hk
+          ./xnu/apply.sh
+          ls -la xnu-src/ | head
+          du -sh xnu-src
+
+      - name: The SDK and host tools
+        run: |
+          cd hk
+          ./xnu-deps/setup.sh --stage1 2>&1 | tail -40
+
+      - name: Build the kernel
+        run: |
+          cd hk
+          ./xnu-deps/setup.sh --stage2 2>&1 | tail -40 || true
+          MACHINE=BCM2837 ./xnu-build.sh -j4 2>&1 | tail -80
+          ls -la BUILD/obj/DEVELOPMENT_ARM64_BCM2837/ 2>/dev/null | head
+
+      - name: Publish the kernel
+        if: always()
+        run: |
+          mkdir -p build-kernel
+          cp -f hk/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 build-kernel/ 2>/dev/null || true
+          cp -f hk/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped build-kernel/ 2>/dev/null || true
+          cp -f hk/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/EXPORTED_SYMBOLS build-kernel/ 2>/dev/null || true
+          if [ -z "$(ls -A build-kernel)" ]; then
+            echo "no kernel produced"
+            tail -200 hk/*.log 2>/dev/null || true
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build-kernel
+          git commit -m "hakios kernel output" || true
+          git push || true
