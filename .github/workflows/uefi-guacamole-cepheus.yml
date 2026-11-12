@@ -1,0 +1,88 @@
+name: uefi-guacamole-cepheus
+
+# The working base, with the XNU loader switched on: the cepheus package (the one that boots on this
+# phone) plus the HakiOS BootManager/XnuLoader patch, built for 1440x3120, with the payload copy in
+# the boot shim so the UEFI finds the loader at 0xF0000000.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone Mu-Silicium at the pinned commit
+        run: |
+          git clone https://github.com/Project-Silicium/Mu-Silicium.git mu
+          cd mu
+          git checkout e51cd877e31c8fbb322032dc4cb6715e83d25ad3
+          git submodule update --init --recursive
+
+      - name: Install build dependencies
+        run: |
+          cd mu
+          ./setup_env.sh -p apt || sudo ./setup_env.sh -p apt
+
+      - name: Apply the HakiOS patch and our screen identity
+        run: |
+          cd mu
+          git apply --whitespace=nowarn ../src/devices/guacamole/uefi/mu-silicium.patch
+          cp -r ../src/devices/guacamole/uefi/files/. .
+          # the loader boots from the payload instead of looking for a disk
+          python3 - <<'PY'
+          from pathlib import Path
+          dsc = Path("Platforms/Xiaomi/cepheusPkg/cepheus.dsc")
+          t = dsc.read_text()
+          if "XNU_PAYLOAD_BOOT" not in t:
+              t = t.replace("[BuildOptions]",
+                  "[BuildOptions]\n*_CLANGPDB_AARCH64_CC_FLAGS = -DXNU_NO_DISK_LOG -DXNU_PAYLOAD_BOOT", 1)
+              dsc.write_text(t)
+          t = dsc.read_text()
+          t = t.replace("PcdFrameBufferWidth|1080", "PcdFrameBufferWidth|1440")
+          t = t.replace("PcdFrameBufferHeight|2340", "PcdFrameBufferHeight|3120")
+          t = t.replace('"Mi 9"', '"OnePlus 7 Pro"').replace('"Xiaomi"', '"OnePlus"')
+          t = t.replace('"cepheus"', '"guacamole"').replace('"Mi_9_cepheus"', '"OnePlus_7_Pro"')
+          dsc.write_text(t)
+          print("payload boot:", "XNU_PAYLOAD_BOOT" in dsc.read_text())
+          PY
+          grep -n 'XNU_PAYLOAD_BOOT\|PcdFrameBuffer' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+
+      - name: Build UEFI
+        run: |
+          cd mu
+          python3 --version
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r pip-requirements.txt
+          python build_uefi.py -d cepheus -r DEBUG
+
+      - name: Rebuild BootShim with the payload base
+        run: |
+          cd mu
+          rm -f BootShim/BootShim.bin BootShim/BootShim.elf BootShim/*.o
+          make -C BootShim REQUIRES_KERNEL_HEADER=1 FD_BASE=0x9FC00000 FD_SIZE=0x300000 \
+            CFLAGS="--target=aarch64-linux-gnu -DPAYLOAD_BASE=0xF0000000"
+          mkdir -p out
+          cp -v BootShim/BootShim.bin out/BootShim.bin
+          find Build/cepheusPkg -maxdepth 3 -name '*.fd' -exec cp -v {} out/ \;
+          ls -l out
+
+      - name: Publish outputs into the repository
+        if: always()
+        run: |
+          mkdir -p build-cepheus-payload
+          cp -f mu/out/* build-cepheus-payload/ 2>/dev/null || true
+          if [ -z "$(ls -A build-cepheus-payload)" ]; then echo "nothing"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build-cepheus-payload
+          git commit -m "cepheus + xnuloader uefi output" || true
+          git push || true
