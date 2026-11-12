@@ -33,6 +33,14 @@ jobs:
       - name: Build the stock cepheus firmware
         run: |
           cd mu
+          # our panel is 1440x3120, cepheus's 1080x2340; everything else stays upstream
+          sed -i 's/PcdFrameBufferWidth|1080/PcdFrameBufferWidth|1440/' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          sed -i 's/PcdFrameBufferHeight|2340/PcdFrameBufferHeight|3120/' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          sed -i 's/"Mi 9"/"OnePlus 7 Pro"/g' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          sed -i 's/"cepheus"/"guacamole"/g' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          sed -i 's/"Mi_9_cepheus"/"OnePlus_7_Pro"/g' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          sed -i 's/"Xiaomi"/"OnePlus"/g' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
+          grep -n 'PcdFrameBuffer\|Smbios' Platforms/Xiaomi/cepheusPkg/cepheus.dsc
           python3 --version
           python3 -m venv venv
           source venv/bin/activate
