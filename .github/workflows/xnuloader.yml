@@ -1,0 +1,73 @@
+name: xnuloader
+
+# Build the second-stage loader from the HakiOS sources, with one change: their loader only accepts a
+# GOP whose framebuffer is at 0xE1000000 (their own firmware puts it there); Mu-Silicium hands us the
+# ABL's splash at 0x9C000000 instead, which sent the loader down its QEMU path (fw_cfg at 0x09020000)
+# and into a translation fault. With 0x9C000000 accepted, it takes the raphael platform and runs.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the loader sources at the pinned commit
+        run: |
+          sha=57722468a3774e2ec60017705ec356ae9b31f40e
+          base="https://raw.githubusercontent.com/HeliumStudio-Dev/hackios-xnu-kernel/${sha}/xnuloader"
+          mkdir -p xnuloader
+          for f in loader.c efi.h build.sh mkidentity.sh mkidentity.py mkpayload.py im4p.py; do
+            curl -fsSL "${base}/${f}" -o "xnuloader/${f}"
+          done
+          chmod +x xnuloader/*.sh
+          wc -c xnuloader/*
+
+      - name: Accept the firmware's framebuffer
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("xnuloader/loader.c")
+          t = p.read_text()
+          old = "if (SCREEN.base == 0xE1000000ULL) {"
+          new = "if (SCREEN.base == 0xE1000000ULL || SCREEN.base == 0x9c000000ULL) {"
+          if old not in t:
+              raise SystemExit("loader.c: the framebuffer test is not where it was")
+          p.write_text(t.replace(old, new, 1))
+          print("loader.c: 0x9c000000 (the ABL splash Mu-Silicium reports) accepted")
+          PY
+          grep -n "0x9c000000ULL\|0xE1000000ULL" xnuloader/loader.c | head -5
+
+      - name: Build the loader
+        run: |
+          set -e
+          which clang lld-link || sudo apt-get update -qq
+          which clang || sudo apt-get install -y clang
+          which lld-link || sudo apt-get install -y lld
+          clang --version
+          lld-link --version
+          cd xnuloader
+          ./mkidentity.sh --placeholder
+          ./build.sh
+          ls -l loader.efi
+          file loader.efi || true
+
+      - name: Publish the loader
+        if: always()
+        run: |
+          mkdir -p build-xnuloader
+          cp -f xnuloader/loader.efi build-xnuloader/ 2>/dev/null || true
+          cp -f xnuloader/identity.h build-xnuloader/ 2>/dev/null || true
+          if [ -z "$(ls -A build-xnuloader)" ]; then echo "nothing"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build-xnuloader
+          git commit -m "xnuloader output" || true
+          git push || true
